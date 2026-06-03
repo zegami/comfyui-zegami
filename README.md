@@ -1,5 +1,9 @@
 # ComfyUI-Zegami
 
+[![CI](https://github.com/zegami/comfyui-zegami/actions/workflows/ci.yml/badge.svg)](https://github.com/zegami/comfyui-zegami/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
+
 > Push every ComfyUI generation — **image or video** — into a [Zegami](https://zegami.com)
 > collection for visual triage, comparison, and curation.
 
