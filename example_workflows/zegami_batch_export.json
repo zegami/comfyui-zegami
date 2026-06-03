@@ -1,0 +1,58 @@
+{
+  "last_node_id": 9,
+  "last_link_id": 9,
+  "nodes": [
+    {
+      "id": 4,
+      "type": "CheckpointLoaderSimple",
+      "pos": [40, 200],
+      "widgets_values": ["sd_xl_base_1.0.safetensors"]
+    },
+    {
+      "id": 6,
+      "type": "CLIPTextEncode",
+      "pos": [320, 120],
+      "title": "positive",
+      "widgets_values": ["a serene mountain lake at golden hour, ultradetailed"]
+    },
+    {
+      "id": 7,
+      "type": "CLIPTextEncode",
+      "pos": [320, 320],
+      "title": "negative",
+      "widgets_values": ["blurry, low quality, watermark"]
+    },
+    {
+      "id": 5,
+      "type": "EmptyLatentImage",
+      "pos": [320, 520],
+      "widgets_values": [768, 768, 4]
+    },
+    {
+      "id": 3,
+      "type": "KSampler",
+      "pos": [640, 200],
+      "widgets_values": [123456789, "randomize", 25, 7.5, "euler", "normal", 1.0]
+    },
+    {
+      "id": 8,
+      "type": "VAEDecode",
+      "pos": [960, 200]
+    },
+    {
+      "id": 9,
+      "type": "ZegamiBatchExport",
+      "pos": [1200, 200],
+      "title": "Zegami Batch Export",
+      "widgets_values": ["", "demo, mountains", "Example workflow run", 16, "", "", true],
+      "_comment": "Set collection_id; the API key comes from ZEGAMI_API_KEY (never embed it here). images <- VAEDecode."
+    },
+    {
+      "id": 10,
+      "type": "SaveImage",
+      "pos": [1480, 200]
+    }
+  ],
+  "links": [],
+  "_note": "Illustrative graph: Checkpoint -> CLIP(+/-) -> KSampler(batch 4) -> VAEDecode -> ZegamiBatchExport -> SaveImage. The node passes images through, so it sits inline before SaveImage. No API key is stored in this file."
+}

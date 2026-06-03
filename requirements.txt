@@ -1,0 +1,5 @@
+# Runtime dependency — that's it.
+# torch / numpy / PIL come from ComfyUI itself.
+# ffmpeg is a system binary (install via your OS / conda), used for video
+# encoding + poster frames. Document, don't pip-install.
+requests>=2.28

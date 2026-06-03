@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "comfyui-zegami"
+version = "0.1.0"
+description = "Push every ComfyUI generation (image or video) into a Zegami collection for visual triage, comparison, and curation."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Zegami" }]
+keywords = ["comfyui", "zegami", "stable-diffusion", "dataset", "curation"]
+# Intentionally minimal: ComfyUI provides torch/numpy/PIL at runtime, and
+# ffmpeg is a documented system binary — not a pip dependency. ComfyUI users
+# distrust node packs that drag in half of PyPI.
+dependencies = ["requests>=2.28"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "ruff>=0.4", "numpy>=1.23", "pillow>=9"]
+
+[project.urls]
+Homepage = "https://github.com/zegami/comfyui-zegami"
+Repository = "https://github.com/zegami/comfyui-zegami"
+
+# ComfyUI Registry metadata (https://registry.comfy.org). `comfy node publish`
+# reads this block.
+[tool.comfy]
+PublisherId = "zegami"
+DisplayName = "ComfyUI-Zegami"
+Repository = "https://github.com/zegami/comfyui-zegami"
+
+[tool.setuptools]
+packages = ["zegami_client", "comfyui_zegami"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
