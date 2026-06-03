@@ -61,9 +61,14 @@ def _image_items(tmp_path, n=2):
 def test_upload_batch_image_happy_path(tmp_path):
     captured = {}
 
+    captured["stage_content_types"] = {}
+
     def handler(method, url, kw):
         if "upload-stream" in url:
             kind = "csv" if "kind=csv" in url else "zip"
+            # The staging PUTs MUST send a Content-Type — without it the
+            # server's request adapter drops the body (→ empty_body 400).
+            captured["stage_content_types"][kind] = kw["headers"].get("Content-Type")
             if kind == "csv":
                 captured["csv"] = kw["data"].read().decode()
             return FakeResponse(200, {"blobPath": f"col1/_staging/{kind}"})
@@ -80,6 +85,8 @@ def test_upload_batch_image_happy_path(tmp_path):
     assert captured["body"]["zipBlobs"] == ["col1/_staging/zip"]
     assert captured["body"]["csvBlob"] == "col1/_staging/csv"
     assert captured["auth"] == "Bearer zeg_secret"
+    # Both staging PUTs carry a Content-Type (regression — see commit msg).
+    assert captured["stage_content_types"] == {"zip": "application/zip", "csv": "text/csv"}
     # The opaque prompt graph rides the `_comfy_json` CSV column.
     assert "_comfy_json" in captured["csv"]
     assert "KSampler" in captured["csv"]

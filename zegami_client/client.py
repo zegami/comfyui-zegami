@@ -204,12 +204,18 @@ class ZegamiClient:
             f"{self.endpoint}/collection/{collection_id}"
             f"/manage/import-zip/upload-stream?kind={kind}"
         )
+        # A Content-Type is REQUIRED: without it the server's request adapter
+        # drops the streamed body and the upload-stream route 400s with
+        # `empty_body`. (The enqueue/ensure calls use json= which sets it
+        # automatically; only these raw streaming PUTs need it set by hand.)
+        headers = {
+            **self._headers(),
+            "Content-Type": "application/zip" if kind == "zip" else "text/csv",
+        }
 
         def call() -> requests.Response:
             with open(path, "rb") as body:
-                return self.session.put(
-                    url, data=body, headers=self._headers(), timeout=self.timeout
-                )
+                return self.session.put(url, data=body, headers=headers, timeout=self.timeout)
 
         data = self._with_retry(call).json()
         return data.get("blobPath") or data.get("blob") or ""
