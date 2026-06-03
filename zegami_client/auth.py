@@ -32,6 +32,31 @@ def _read_config(config_path: Path) -> dict:
         return {}
 
 
+def resolve_api_key_source(
+    node_override: str = "",
+    config_path: Path = DEFAULT_CONFIG_PATH,
+) -> tuple[str | None, str]:
+    """Like :func:`resolve_api_key`, but also returns WHERE the key came from
+    (``"node input"`` / ``"ZEGAMI_API_KEY env"`` / ``"~/.zegami/config.json"`` /
+    ``"none"``).
+
+    The source is the single most useful thing to surface on an auth/scope
+    failure: the classic "I minted a new key but still get 403" is almost
+    always a STALE key winning from a source the user forgot about (an old
+    env var, a leftover config file). Naming the source tells them which one
+    to fix.
+    """
+    if node_override and node_override.strip():
+        return node_override.strip(), "node input"
+    env = os.environ.get("ZEGAMI_API_KEY", "").strip()
+    if env:
+        return env, "ZEGAMI_API_KEY env"
+    cfg_key = str(_read_config(config_path).get("api_key", "")).strip()
+    if cfg_key:
+        return cfg_key, str(config_path)
+    return None, "none"
+
+
 def resolve_api_key(
     node_override: str = "",
     config_path: Path = DEFAULT_CONFIG_PATH,
@@ -41,15 +66,20 @@ def resolve_api_key(
     The explicit `api_key_override` node input takes precedence over the
     ambient `ZEGAMI_API_KEY` env var and `~/.zegami/config.json`.
     """
-    if node_override and node_override.strip():
-        return node_override.strip()
-    env = os.environ.get("ZEGAMI_API_KEY", "").strip()
-    if env:
-        return env
-    cfg_key = str(_read_config(config_path).get("api_key", "")).strip()
-    if cfg_key:
-        return cfg_key
-    return None
+    return resolve_api_key_source(node_override, config_path)[0]
+
+
+def key_fingerprint(token: str | None) -> str:
+    """A non-secret identifier for a key — the `zeg_<prefix>` head Zegami
+    itself stores and shows, safe to print in logs. Never reveals enough of
+    the token to use it."""
+    if not token:
+        return "<none>"
+    t = token.strip()
+    # Tokens look like `zeg_<prefix><secret>`; the platform's stored prefix is
+    # the first 8 chars after `zeg_`. Show that head and elide the rest.
+    head = t[:12] if t.startswith("zeg_") else t[:8]
+    return f"{head}…"
 
 
 def resolve_endpoint(

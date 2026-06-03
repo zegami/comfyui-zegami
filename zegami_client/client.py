@@ -29,6 +29,7 @@ from pathlib import Path
 
 import requests
 
+from .auth import key_fingerprint
 from .errors import PermanentError, RetryableError
 from .models import BatchUploadResult, UploadItem, UploadResult
 
@@ -43,6 +44,7 @@ class ZegamiClient:
         session: requests.Session | None = None,
         max_retries: int = 3,
         sleep: Callable[[float], None] = time.sleep,
+        key_source: str = "unknown",
     ) -> None:
         self.endpoint = endpoint.rstrip("/")
         self.api_key = api_key
@@ -50,6 +52,11 @@ class ZegamiClient:
         self.session = session or requests.Session()
         self.max_retries = max_retries
         self._sleep = sleep
+        # Diagnostics only (no auth effect): a non-secret fingerprint of the
+        # key + where it was resolved from, so failure logs can pinpoint a
+        # stale key without the user reading server logs.
+        self.key_source = key_source
+        self.key_label = key_fingerprint(api_key)
 
     # ── HTTP helpers ────────────────────────────────────────────────────
     def _headers(self) -> dict:
@@ -57,10 +64,13 @@ class ZegamiClient:
 
     @staticmethod
     def _raise_for_status(resp: requests.Response) -> None:
+        # Keep enough of the body that an actionable server message (e.g. the
+        # scope-403 that names the offending key + the fix) survives intact —
+        # 200 chars clipped it mid-sentence.
         if resp.status_code == 429 or resp.status_code >= 500:
-            raise RetryableError(f"HTTP {resp.status_code}: {resp.text[:200]}")
+            raise RetryableError(f"HTTP {resp.status_code}: {resp.text[:400]}")
         if resp.status_code >= 400:
-            raise PermanentError(f"HTTP {resp.status_code}: {resp.text[:200]}")
+            raise PermanentError(f"HTTP {resp.status_code}: {resp.text[:400]}")
 
     def _with_retry(self, fn: Callable[[], requests.Response]) -> requests.Response:
         last: Exception | None = None

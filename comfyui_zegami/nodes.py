@@ -16,7 +16,14 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from zegami_client import UploadItem, ZegamiClient, resolve_api_key, resolve_endpoint
+from zegami_client import (
+    UploadItem,
+    ZegamiClient,
+    key_fingerprint,
+    resolve_api_key,
+    resolve_api_key_source,
+    resolve_endpoint,
+)
 
 from .capture import build_metadata
 from .encoding import (
@@ -95,7 +102,32 @@ class ZegamiBatchExport:
         # Uploads are never cacheable — always re-run.
         return float("nan")
 
+    @classmethod
+    def VALIDATE_INPUTS(cls, fps=None):  # noqa: ANN001, ANN206
+        """Tolerate a blank/odd `fps` widget.
+
+        ComfyUI type-validates EVERY declared input before the node runs, and
+        an empty `fps` widget (serialised as "") makes its `int("")` coercion
+        raise — so ComfyUI rejects the node and silently drops the export
+        ('Output will be ignored'). That blocks even IMAGE-only exports, which
+        never use fps at all. Declaring `fps` here hands its validation to us;
+        we accept anything and coerce defensively in `export()`. Every other
+        input keeps ComfyUI's normal validation.
+        """
+        return True
+
     # ── helpers ─────────────────────────────────────────────────────────
+    @staticmethod
+    def _coerce_fps(value: Any, default: int = 16) -> int:
+        """Best-effort int in [1, 120]; blank/garbage → default. Mirrors the
+        INPUT_TYPES bounds. Because VALIDATE_INPUTS defers fps validation, the
+        raw widget value (possibly "" or "16.0") reaches export() unconverted."""
+        try:
+            v = int(float(str(value).strip()))
+        except (TypeError, ValueError):
+            return default
+        return min(120, max(1, v))
+
     @staticmethod
     def _output_dir() -> Path:
         try:
@@ -258,6 +290,10 @@ class ZegamiBatchExport:
         if not enabled:
             return (images, json.dumps({"success": False, "error": "disabled"}))
 
+        # VALIDATE_INPUTS defers fps validation to us, so it may arrive raw
+        # (e.g. "" from a blank widget). Coerce before any use.
+        fps = self._coerce_fps(fps)
+
         out_dir = self._output_dir()
         run_id = self._make_run_id(unique_id)
         base_meta = build_metadata(
@@ -278,7 +314,7 @@ class ZegamiBatchExport:
         if not items:
             return (images, json.dumps({"success": False, "error": "no image/video input"}))
 
-        api_key = resolve_api_key(api_key_override)
+        api_key, key_source = resolve_api_key_source(api_key_override)
         if not api_key:
             return (
                 images,
@@ -291,7 +327,16 @@ class ZegamiBatchExport:
                     }
                 ),
             )
-        client = ZegamiClient(resolve_endpoint(endpoint_override), api_key)
+        endpoint = resolve_endpoint(endpoint_override)
+        client = ZegamiClient(endpoint, api_key, key_source=key_source)
+        # One console line per submit naming the key + source: makes "which key
+        # is this node actually using?" answerable at a glance (the upload runs
+        # async on the queue, so a later scope-403 is otherwise hard to trace).
+        print(
+            f"[zegami] export → {endpoint} "
+            f"(key {key_fingerprint(api_key)} from {key_source})",
+            flush=True,
+        )
         # Resolve the target collection (id > picked > typed name). The name
         # branch create-or-reuses via ensure_collection — a quick bounded call;
         # on failure we fail soft like the no-key path so a Zegami hiccup never
@@ -320,6 +365,8 @@ class ZegamiBatchExport:
                     "status": "queued",
                     "collection_id": target_id,
                     "items": len(items),
+                    "key": key_fingerprint(api_key),
+                    "key_source": key_source,
                 }
             ),
         )

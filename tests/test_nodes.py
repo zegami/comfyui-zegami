@@ -96,6 +96,30 @@ def test_resolve_target_ensure_returns_no_id():
     assert tid is None and "no id" in err
 
 
+# ── fps robustness (empty widget must not drop the export) ──────────────────
+
+def test_validate_inputs_accepts_blank_fps():
+    # The real-world failure: ComfyUI validates inputs before running, and an
+    # empty `fps` widget ("") makes its int("") coercion raise → 'Output will
+    # be ignored' → export() never runs (no upload, no status). VALIDATE_INPUTS
+    # must accept any fps so ComfyUI doesn't reject the node.
+    assert ZegamiBatchExport.VALIDATE_INPUTS(fps="") is True
+    assert ZegamiBatchExport.VALIDATE_INPUTS(fps=None) is True
+    assert ZegamiBatchExport.VALIDATE_INPUTS(fps="30") is True
+
+
+def test_coerce_fps_handles_blank_and_garbage():
+    coerce = ZegamiBatchExport._coerce_fps
+    assert coerce("") == 16          # blank widget → default
+    assert coerce(None) == 16
+    assert coerce("not-a-number") == 16
+    assert coerce("24") == 24        # string int
+    assert coerce("16.0") == 16      # string float
+    assert coerce(30) == 30          # already int
+    assert coerce("0") == 1          # clamped to min
+    assert coerce("9999") == 120     # clamped to max
+
+
 def test_collection_choices_failsoft_without_ambient_key(monkeypatch):
     # INPUT_TYPES must never raise / block at node-load; no ambient key → [""].
     from comfyui_zegami import nodes

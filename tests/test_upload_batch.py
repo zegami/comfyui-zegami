@@ -196,6 +196,38 @@ def test_permanent_failure_writes_pending_sidecar(tmp_path):
     assert payload["collection_id"] == "col1"
 
 
+def test_permanent_failure_is_logged_loudly(tmp_path, capsys):
+    # Fail-soft must not be fail-silent: a permanent (e.g. scope-403) failure
+    # is printed to the console naming the key fingerprint + source so the
+    # user can spot a stale key, and the actionable server body survives.
+    server_msg = (
+        '{"error":"API key \'zeg_F-z19rfS…\' is not scoped to collection col1 '
+        "— mint a key for this collection (or its workspace) under Settings → "
+        'API access and point your integration at that key."}'
+    )
+
+    def handler(method, url, kw):
+        return FakeResponse(403, text=server_msg)
+
+    items = _image_items(tmp_path, 1)
+    client = ZegamiClient(
+        "https://z.test",
+        "zeg_F-z19rfSIFcqd1yeBFnUPUjfgu",
+        session=FakeSession(handler),
+        sleep=lambda *_: None,
+        key_source="ZEGAMI_API_KEY env",
+    )
+    res = process_job(UploadJob(client=client, collection_id="col1", items=items))
+    assert not res.success
+    # The full actionable server message survived (not clipped at 200 chars).
+    assert "Settings → API access" in res.error
+    out = capsys.readouterr().out
+    assert "FAILED" in out
+    assert "zeg_F-z19rfS…" in out  # the key fingerprint
+    assert "ZEGAMI_API_KEY env" in out  # the source
+    assert "secret" not in out.lower()  # the secret tail never printed
+
+
 def test_ensure_collection(tmp_path):
     def handler(method, url, kw):
         if url.endswith("/collections"):
