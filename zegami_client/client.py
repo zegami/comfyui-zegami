@@ -22,6 +22,7 @@ import csv
 import json
 import tempfile
 import time
+import uuid
 import zipfile
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -146,8 +147,12 @@ class ZegamiClient:
             self._build_zip(zip_path, items)
             self._build_csv(csv_path, items)
 
-            zip_blob = self._stage(collection_id, zip_path, "zip")
-            csv_blob = self._stage(collection_id, csv_path, "csv")
+            # One namespace per batch so this run's staged zip + csv can't be
+            # clobbered by a concurrent / rapid-fire upload to the same
+            # collection (the staging blobs are deleted after ingest).
+            upload_id = uuid.uuid4().hex
+            zip_blob = self._stage(collection_id, zip_path, "zip", upload_id)
+            csv_blob = self._stage(collection_id, csv_path, "csv", upload_id)
 
             def enqueue() -> requests.Response:
                 return self.session.post(
@@ -214,10 +219,13 @@ class ZegamiClient:
                     }
                 )
 
-    def _stage(self, collection_id: str, path: Path, kind: str) -> str:
+    def _stage(self, collection_id: str, path: Path, kind: str, upload_id: str) -> str:
+        # `uploadId` namespaces this run's staged blobs (zip + csv share it),
+        # so concurrent / back-to-back runs into the same collection can't
+        # overwrite or delete each other's staging files mid-ingest.
         url = (
             f"{self.endpoint}/collection/{collection_id}"
-            f"/manage/import-zip/upload-stream?kind={kind}"
+            f"/manage/import-zip/upload-stream?kind={kind}&uploadId={upload_id}"
         )
         # A Content-Type is REQUIRED: without it the server's request adapter
         # drops the streamed body and the upload-stream route 400s with

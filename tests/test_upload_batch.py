@@ -63,12 +63,17 @@ def test_upload_batch_image_happy_path(tmp_path):
 
     captured["stage_content_types"] = {}
 
+    captured["upload_ids"] = {}
+
     def handler(method, url, kw):
         if "upload-stream" in url:
             kind = "csv" if "kind=csv" in url else "zip"
             # The staging PUTs MUST send a Content-Type — without it the
             # server's request adapter drops the body (→ empty_body 400).
             captured["stage_content_types"][kind] = kw["headers"].get("Content-Type")
+            # Capture the per-run uploadId so we can assert zip + csv share it.
+            from urllib.parse import parse_qs, urlparse
+            captured["upload_ids"][kind] = parse_qs(urlparse(url).query).get("uploadId", [None])[0]
             if kind == "csv":
                 captured["csv"] = kw["data"].read().decode()
             return FakeResponse(200, {"blobPath": f"col1/_staging/{kind}"})
@@ -90,6 +95,11 @@ def test_upload_batch_image_happy_path(tmp_path):
     assert captured["auth"] == "Bearer zeg_secret"
     # Both staging PUTs carry a Content-Type (regression — see commit msg).
     assert captured["stage_content_types"] == {"zip": "application/zip", "csv": "text/csv"}
+    # The zip + csv of one batch share a single non-empty uploadId, so the
+    # run's staged blobs are namespaced together and can't be clobbered by a
+    # concurrent upload to the same collection.
+    assert captured["upload_ids"]["zip"]
+    assert captured["upload_ids"]["zip"] == captured["upload_ids"]["csv"]
     # The opaque prompt graph rides the `_comfy_json` CSV column.
     assert "_comfy_json" in captured["csv"]
     assert "KSampler" in captured["csv"]
