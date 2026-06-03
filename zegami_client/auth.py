@@ -1,9 +1,15 @@
 """API-key + endpoint resolution.
 
-Order (per the node spec): environment variable → ~/.zegami/config.json →
-node input. The key is NEVER read from or written back into a workflow JSON,
-so published workflows stay credential-free — a user downloads one, sets their
-own key, and runs.
+Order: explicit node input → environment variable → ~/.zegami/config.json.
+The per-node `api_key_override` input WINS — an input named "override" should
+override ambient sources (the alternative silently shadows whatever the user
+typed into the node, which is surprising and was a real source of "I set the
+key but it's using the wrong one" 403s).
+
+For *shareable* workflows, prefer env / config: a value typed into the node
+widget is saved into the workflow JSON, so a published workflow could leak it;
+env and config are never written into the workflow. The node never reads the
+key from the workflow JSON itself.
 """
 
 from __future__ import annotations
@@ -30,15 +36,19 @@ def resolve_api_key(
     node_override: str = "",
     config_path: Path = DEFAULT_CONFIG_PATH,
 ) -> str | None:
-    """Return the first key found in env → config → node input, else None."""
+    """Return the first key found in node input → env → config, else None.
+
+    The explicit `api_key_override` node input takes precedence over the
+    ambient `ZEGAMI_API_KEY` env var and `~/.zegami/config.json`.
+    """
+    if node_override and node_override.strip():
+        return node_override.strip()
     env = os.environ.get("ZEGAMI_API_KEY", "").strip()
     if env:
         return env
     cfg_key = str(_read_config(config_path).get("api_key", "")).strip()
     if cfg_key:
         return cfg_key
-    if node_override and node_override.strip():
-        return node_override.strip()
     return None
 
 
@@ -46,13 +56,13 @@ def resolve_endpoint(
     node_override: str = "",
     config_path: Path = DEFAULT_CONFIG_PATH,
 ) -> str:
-    """Resolve the base URL: env → config → node input → default."""
+    """Resolve the base URL: node input → env → config → default."""
+    if node_override and node_override.strip():
+        return node_override.strip().rstrip("/")
     env = os.environ.get("ZEGAMI_ENDPOINT", "").strip()
     if env:
         return env.rstrip("/")
     cfg_ep = str(_read_config(config_path).get("endpoint", "")).strip()
     if cfg_ep:
         return cfg_ep.rstrip("/")
-    if node_override and node_override.strip():
-        return node_override.strip().rstrip("/")
     return DEFAULT_ENDPOINT
