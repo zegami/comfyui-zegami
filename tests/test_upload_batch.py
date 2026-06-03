@@ -14,6 +14,12 @@ class FakeResponse:
     def json(self):
         return self._json
 
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            import requests
+
+            raise requests.HTTPError(f"HTTP {self.status_code}")
+
 
 class FakeSession:
     """Routes every request through a user-supplied handler(method, url, kwargs)."""
@@ -63,12 +69,17 @@ def test_upload_batch_image_happy_path(tmp_path):
 
     captured["stage_content_types"] = {}
 
+    captured["upload_ids"] = {}
+
     def handler(method, url, kw):
         if "upload-stream" in url:
             kind = "csv" if "kind=csv" in url else "zip"
             # The staging PUTs MUST send a Content-Type — without it the
             # server's request adapter drops the body (→ empty_body 400).
             captured["stage_content_types"][kind] = kw["headers"].get("Content-Type")
+            # Capture the per-run uploadId so we can assert zip + csv share it.
+            from urllib.parse import parse_qs, urlparse
+            captured["upload_ids"][kind] = parse_qs(urlparse(url).query).get("uploadId", [None])[0]
             if kind == "csv":
                 captured["csv"] = kw["data"].read().decode()
             return FakeResponse(200, {"blobPath": f"col1/_staging/{kind}"})
@@ -84,13 +95,40 @@ def test_upload_batch_image_happy_path(tmp_path):
     assert captured["body"]["csvJoinCol"] == "name"
     assert captured["body"]["zipBlobs"] == ["col1/_staging/zip"]
     assert captured["body"]["csvBlob"] == "col1/_staging/csv"
+    # Default is append=True so successive generations accumulate as
+    # distinct tiles rather than overwriting the previous batch.
+    assert captured["body"]["append"] is True
     assert captured["auth"] == "Bearer zeg_secret"
     # Both staging PUTs carry a Content-Type (regression — see commit msg).
     assert captured["stage_content_types"] == {"zip": "application/zip", "csv": "text/csv"}
+    # The zip + csv of one batch share a single non-empty uploadId, so the
+    # run's staged blobs are namespaced together and can't be clobbered by a
+    # concurrent upload to the same collection.
+    assert captured["upload_ids"]["zip"]
+    assert captured["upload_ids"]["zip"] == captured["upload_ids"]["csv"]
     # The opaque prompt graph rides the `_comfy_json` CSV column.
     assert "_comfy_json" in captured["csv"]
     assert "KSampler" in captured["csv"]
     assert "media_kind" in captured["csv"]
+
+
+def test_upload_batch_append_false_is_forwarded(tmp_path):
+    # A caller can opt out of accumulation (one-shot dataset push) and the
+    # flag must reach the server body verbatim.
+    captured = {}
+
+    def handler(method, url, kw):
+        if "upload-stream" in url:
+            kind = "csv" if "kind=csv" in url else "zip"
+            return FakeResponse(200, {"blobPath": f"col1/_staging/{kind}"})
+        if url.endswith("/manage/import-zip"):
+            captured["body"] = kw["json"]
+            return FakeResponse(202, {"status": "queued"})
+        return FakeResponse(404, text="unexpected")
+
+    res = _client(handler).upload_batch("col1", _image_items(tmp_path), append=False)
+    assert res.success
+    assert captured["body"]["append"] is False
 
 
 def test_upload_batch_video_sets_media_kind_and_raw_ext(tmp_path):
@@ -158,6 +196,38 @@ def test_permanent_failure_writes_pending_sidecar(tmp_path):
     assert payload["collection_id"] == "col1"
 
 
+def test_permanent_failure_is_logged_loudly(tmp_path, capsys):
+    # Fail-soft must not be fail-silent: a permanent (e.g. scope-403) failure
+    # is printed to the console naming the key fingerprint + source so the
+    # user can spot a stale key, and the actionable server body survives.
+    server_msg = (
+        '{"error":"API key \'zeg_F-z19rfS…\' is not scoped to collection col1 '
+        "— mint a key for this collection (or its workspace) under Settings → "
+        'API access and point your integration at that key."}'
+    )
+
+    def handler(method, url, kw):
+        return FakeResponse(403, text=server_msg)
+
+    items = _image_items(tmp_path, 1)
+    client = ZegamiClient(
+        "https://z.test",
+        "zeg_F-z19rfSIFcqd1yeBFnUPUjfgu",
+        session=FakeSession(handler),
+        sleep=lambda *_: None,
+        key_source="ZEGAMI_API_KEY env",
+    )
+    res = process_job(UploadJob(client=client, collection_id="col1", items=items))
+    assert not res.success
+    # The full actionable server message survived (not clipped at 200 chars).
+    assert "Settings → API access" in res.error
+    out = capsys.readouterr().out
+    assert "FAILED" in out
+    assert "zeg_F-z19rfS…" in out  # the key fingerprint
+    assert "ZEGAMI_API_KEY env" in out  # the source
+    assert "secret" not in out.lower()  # the secret tail never printed
+
+
 def test_ensure_collection(tmp_path):
     def handler(method, url, kw):
         if url.endswith("/collections"):
@@ -167,3 +237,22 @@ def test_ensure_collection(tmp_path):
         return FakeResponse(404)
 
     assert _client(handler).ensure_collection("My Gallery") == "col_abc"
+
+
+def test_list_collections_parses_id_and_name():
+    def handler(method, url, kw):
+        if method == "GET" and url.endswith("/collections"):
+            return FakeResponse(200, [
+                {"id": "a", "name": "Alpha"},
+                {"id": "b", "name": "Beta"},
+                {"name": "no-id"},   # skipped — no id
+                {"id": "c"},          # name falls back to id
+            ])
+        return FakeResponse(404, text="unexpected")
+
+    cols = _client(handler).list_collections()
+    assert cols == [
+        {"id": "a", "name": "Alpha"},
+        {"id": "b", "name": "Beta"},
+        {"id": "c", "name": "c"},
+    ]

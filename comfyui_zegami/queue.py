@@ -44,18 +44,37 @@ def _write_pending(job: UploadJob, error: str) -> None:
             pass  # best-effort — never raise out of the worker
 
 
+def _log_failure(job: UploadJob, error: str) -> None:
+    """Surface an upload failure on the ComfyUI console. Fail-SOFT must not
+    mean fail-SILENT: the generation is safe, but the user needs to know the
+    push didn't land — and which key (fingerprint + source) was used, since
+    the #1 cause is a stale key winning from a forgotten env var / config."""
+    label = getattr(job.client, "key_label", "?")
+    source = getattr(job.client, "key_source", "unknown")
+    print(
+        f"[zegami] upload to '{job.collection_id}' FAILED "
+        f"(key {label} from {source}): {error}\n"
+        f"[zegami] {len(job.items)} item(s) saved locally with a "
+        f".zegami-pending sidecar — generation was not affected.",
+        flush=True,
+    )
+
+
 def process_job(job: UploadJob) -> BatchUploadResult:
     """Run one job to completion. Never raises — on failure it writes the
-    fail-soft sidecar and returns an unsuccessful result."""
+    fail-soft sidecar, logs to the console, and returns an unsuccessful
+    result."""
     try:
         return job.client.upload_batch(job.collection_id, job.items)
     except PermanentError as e:
         _write_pending(job, str(e))
+        _log_failure(job, str(e))
         return BatchUploadResult(
             success=False, collection_id=job.collection_id, error=str(e)
         )
     except Exception as e:  # exhausted retries / unexpected
         _write_pending(job, str(e))
+        _log_failure(job, str(e))
         return BatchUploadResult(
             success=False, collection_id=job.collection_id, error=str(e)
         )

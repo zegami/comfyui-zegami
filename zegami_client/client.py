@@ -22,12 +22,14 @@ import csv
 import json
 import tempfile
 import time
+import uuid
 import zipfile
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import requests
 
+from .auth import key_fingerprint
 from .errors import PermanentError, RetryableError
 from .models import BatchUploadResult, UploadItem, UploadResult
 
@@ -42,6 +44,7 @@ class ZegamiClient:
         session: requests.Session | None = None,
         max_retries: int = 3,
         sleep: Callable[[float], None] = time.sleep,
+        key_source: str = "unknown",
     ) -> None:
         self.endpoint = endpoint.rstrip("/")
         self.api_key = api_key
@@ -49,6 +52,11 @@ class ZegamiClient:
         self.session = session or requests.Session()
         self.max_retries = max_retries
         self._sleep = sleep
+        # Diagnostics only (no auth effect): a non-secret fingerprint of the
+        # key + where it was resolved from, so failure logs can pinpoint a
+        # stale key without the user reading server logs.
+        self.key_source = key_source
+        self.key_label = key_fingerprint(api_key)
 
     # ── HTTP helpers ────────────────────────────────────────────────────
     def _headers(self) -> dict:
@@ -56,10 +64,13 @@ class ZegamiClient:
 
     @staticmethod
     def _raise_for_status(resp: requests.Response) -> None:
+        # Keep enough of the body that an actionable server message (e.g. the
+        # scope-403 that names the offending key + the fix) survives intact —
+        # 200 chars clipped it mid-sentence.
         if resp.status_code == 429 or resp.status_code >= 500:
-            raise RetryableError(f"HTTP {resp.status_code}: {resp.text[:200]}")
+            raise RetryableError(f"HTTP {resp.status_code}: {resp.text[:400]}")
         if resp.status_code >= 400:
-            raise PermanentError(f"HTTP {resp.status_code}: {resp.text[:200]}")
+            raise PermanentError(f"HTTP {resp.status_code}: {resp.text[:400]}")
 
     def _with_retry(self, fn: Callable[[], requests.Response]) -> requests.Response:
         last: Exception | None = None
@@ -95,6 +106,26 @@ class ZegamiClient:
         data = self._with_retry(call).json()
         return data.get("id")
 
+    def list_collections(self) -> list[dict]:
+        """Collections the key can see — `[{"id", "name"}, ...]`.
+
+        Used to populate the node's collection picker. Single GET, no retry
+        loop (it's called at node-load and must stay snappy); the caller is
+        expected to fail soft. NB: a collection-SCOPED key returns a trimmed
+        list — a useful picker wants an account/workspace key.
+        """
+        resp = self.session.get(
+            f"{self.endpoint}/collections",
+            headers=self._headers(),
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        out: list[dict] = []
+        for c in resp.json() or []:
+            if isinstance(c, dict) and c.get("id"):
+                out.append({"id": c["id"], "name": c.get("name") or c["id"]})
+        return out
+
     def upload_item(
         self,
         collection_id: str,
@@ -120,8 +151,22 @@ class ZegamiClient:
         )
 
     def upload_batch(
-        self, collection_id: str, items: Sequence[UploadItem]
+        self,
+        collection_id: str,
+        items: Sequence[UploadItem],
+        *,
+        append: bool = True,
     ) -> BatchUploadResult:
+        """Upload a batch of items into ``collection_id``.
+
+        ``append`` (default ``True``) tells the server to ADD this batch
+        to the collection rather than replacing it — so successive
+        generations accumulate as distinct tiles, which is what an
+        incremental client (the ComfyUI export node) wants. Pass
+        ``append=False`` for one-shot dataset pushes that should define
+        the whole collection. On a fresh/empty collection the two behave
+        identically.
+        """
         if not items:
             return BatchUploadResult(success=True, collection_id=collection_id, item_ids=[])
 
@@ -132,8 +177,12 @@ class ZegamiClient:
             self._build_zip(zip_path, items)
             self._build_csv(csv_path, items)
 
-            zip_blob = self._stage(collection_id, zip_path, "zip")
-            csv_blob = self._stage(collection_id, csv_path, "csv")
+            # One namespace per batch so this run's staged zip + csv can't be
+            # clobbered by a concurrent / rapid-fire upload to the same
+            # collection (the staging blobs are deleted after ingest).
+            upload_id = uuid.uuid4().hex
+            zip_blob = self._stage(collection_id, zip_path, "zip", upload_id)
+            csv_blob = self._stage(collection_id, csv_path, "csv", upload_id)
 
             def enqueue() -> requests.Response:
                 return self.session.post(
@@ -143,6 +192,7 @@ class ZegamiClient:
                         "csvBlob": csv_blob,
                         "csvJoinCol": "name",
                         "thumbSize": 512,
+                        "append": append,
                     },
                     headers=self._headers(),
                     timeout=self.timeout,
@@ -199,10 +249,13 @@ class ZegamiClient:
                     }
                 )
 
-    def _stage(self, collection_id: str, path: Path, kind: str) -> str:
+    def _stage(self, collection_id: str, path: Path, kind: str, upload_id: str) -> str:
+        # `uploadId` namespaces this run's staged blobs (zip + csv share it),
+        # so concurrent / back-to-back runs into the same collection can't
+        # overwrite or delete each other's staging files mid-ingest.
         url = (
             f"{self.endpoint}/collection/{collection_id}"
-            f"/manage/import-zip/upload-stream?kind={kind}"
+            f"/manage/import-zip/upload-stream?kind={kind}&uploadId={upload_id}"
         )
         # A Content-Type is REQUIRED: without it the server's request adapter
         # drops the streamed body and the upload-stream route 400s with
