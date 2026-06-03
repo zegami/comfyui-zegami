@@ -14,6 +14,12 @@ class FakeResponse:
     def json(self):
         return self._json
 
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            import requests
+
+            raise requests.HTTPError(f"HTTP {self.status_code}")
+
 
 class FakeSession:
     """Routes every request through a user-supplied handler(method, url, kwargs)."""
@@ -199,3 +205,22 @@ def test_ensure_collection(tmp_path):
         return FakeResponse(404)
 
     assert _client(handler).ensure_collection("My Gallery") == "col_abc"
+
+
+def test_list_collections_parses_id_and_name():
+    def handler(method, url, kw):
+        if method == "GET" and url.endswith("/collections"):
+            return FakeResponse(200, [
+                {"id": "a", "name": "Alpha"},
+                {"id": "b", "name": "Beta"},
+                {"name": "no-id"},   # skipped — no id
+                {"id": "c"},          # name falls back to id
+            ])
+        return FakeResponse(404, text="unexpected")
+
+    cols = _client(handler).list_collections()
+    assert cols == [
+        {"id": "a", "name": "Alpha"},
+        {"id": "b", "name": "Beta"},
+        {"id": "c", "name": "c"},
+    ]

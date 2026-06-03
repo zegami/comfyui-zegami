@@ -37,6 +37,28 @@ class ZegamiBatchExport:
     RETURN_NAMES = ("images", "upload_status")
     OUTPUT_NODE = True
 
+    @staticmethod
+    def _collection_choices() -> list[str]:
+        """Existing collection names for the picker dropdown.
+
+        INPUT_TYPES runs at node-load and can't see the per-node
+        api_key_override widget, so this can only use an AMBIENT key
+        (ZEGAMI_API_KEY env / ~/.zegami/config.json). Fails soft to `[""]`
+        (blank = no pick) on any error — missing/slow/scoped Zegami must never
+        block ComfyUI startup. The list refreshes when the node graph reloads.
+        NB: a useful picker wants an account/workspace key; a collection-scoped
+        key returns a trimmed list. To create a NEW collection, type into
+        `collection_name` instead of picking here."""
+        try:
+            key = resolve_api_key("")
+            if not key:
+                return [""]
+            client = ZegamiClient(resolve_endpoint(""), key, timeout=4)
+            names = sorted({c["name"] for c in client.list_collections() if c.get("name")})
+            return [""] + names
+        except Exception:
+            return [""]
+
     @classmethod
     def INPUT_TYPES(cls) -> dict:
         return {
@@ -44,7 +66,16 @@ class ZegamiBatchExport:
             "optional": {
                 "images": ("IMAGE",),
                 "video": ("VIDEO",),
+                # Dropdown of existing collections when an ambient key is set
+                # (else a lone blank option). Selecting one targets it; leave
+                # blank to use collection_id / collection_name.
+                "collection_picker": (cls._collection_choices(),),
                 "collection_id": ("STRING", {"default": ""}),
+                # Create-or-reuse a collection by NAME when no id is given —
+                # so a workflow doesn't need a pre-existing collection. id wins
+                # if both are set. Needs a key that can create (account- or
+                # workspace-scoped; a collection-scoped key can't create).
+                "collection_name": ("STRING", {"default": ""}),
                 "tags": ("STRING", {"default": ""}),
                 "notes": ("STRING", {"multiline": True, "default": ""}),
                 "fps": ("INT", {"default": 16, "min": 1, "max": 120}),
@@ -93,6 +124,34 @@ class ZegamiBatchExport:
         """
         node_id = str(unique_id or "run").replace("/", "_")
         return f"{node_id}_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+
+    @staticmethod
+    def _resolve_target_collection(
+        client: Any, picker: str, cid: str, cname: str
+    ) -> tuple[str | None, str | None]:
+        """Resolve the target collection id. Explicit id wins; else a picked
+        existing collection; else a typed name (create-or-reuse via
+        ensure_collection, which returns the existing one on a name match).
+        Returns ``(collection_id, None)`` or ``(None, error_message)``."""
+        target = (cid or "").strip()
+        if target:
+            return target, None
+        name = (picker or "").strip() or (cname or "").strip()
+        if not name:
+            return None, (
+                "pick a collection, or set collection_id / collection_name "
+                "(name creates/reuses one)"
+            )
+        try:
+            rid = client.ensure_collection(name)
+        except Exception as e:  # noqa: BLE001
+            return None, (
+                f"could not create/find collection {name!r}: {e} "
+                "(a collection-scoped key can't create — use an account/workspace key)"
+            )
+        if not rid:
+            return None, f"ensure_collection returned no id for {name!r}"
+        return rid, None
 
     def _build_items(
         self,
@@ -183,7 +242,9 @@ class ZegamiBatchExport:
         self,
         images: Any = None,
         video: Any = None,
+        collection_picker: str = "",
         collection_id: str = "",
+        collection_name: str = "",
         tags: str = "",
         notes: str = "",
         fps: int = 16,
@@ -230,18 +291,34 @@ class ZegamiBatchExport:
                     }
                 ),
             )
-        if not collection_id:
-            return (images, json.dumps({"success": False, "error": "collection_id is required"}))
-
         client = ZegamiClient(resolve_endpoint(endpoint_override), api_key)
-        get_queue().submit(UploadJob(client=client, collection_id=collection_id, items=items))
+        # Resolve the target collection (id > picked > typed name). The name
+        # branch create-or-reuses via ensure_collection — a quick bounded call;
+        # on failure we fail soft like the no-key path so a Zegami hiccup never
+        # costs the user their generation.
+        target_id, col_err = self._resolve_target_collection(
+            client, collection_picker, collection_id, collection_name
+        )
+        if col_err:
+            return (
+                images,
+                json.dumps(
+                    {
+                        "success": False,
+                        "error": col_err,
+                        "saved_local": [str(it.media_path) for it in items],
+                    }
+                ),
+            )
+
+        get_queue().submit(UploadJob(client=client, collection_id=target_id, items=items))
         return (
             images,
             json.dumps(
                 {
                     "success": True,
                     "status": "queued",
-                    "collection_id": collection_id,
+                    "collection_id": target_id,
                     "items": len(items),
                 }
             ),

@@ -41,3 +41,79 @@ def test_run_id_falls_back_when_unique_id_missing():
     rid = ZegamiBatchExport._make_run_id(None)
     assert rid.startswith("run_")
     assert rid != ZegamiBatchExport._make_run_id(None)
+
+
+# ── collection resolution (id > picker > name → ensure_collection) ──────────
+
+class _FakeClient:
+    def __init__(self, ensure_id="col-ensured", raise_ensure=False):
+        self._id = ensure_id
+        self._raise = raise_ensure
+        self.ensure_calls = []
+
+    def ensure_collection(self, name):
+        self.ensure_calls.append(name)
+        if self._raise:
+            raise RuntimeError("boom")
+        return self._id
+
+
+def test_resolve_target_explicit_id_wins():
+    c = _FakeClient()
+    tid, err = ZegamiBatchExport._resolve_target_collection(c, "picked", "explicit-id", "typed")
+    assert (tid, err) == ("explicit-id", None)
+    assert c.ensure_calls == []  # id given → no ensure round-trip
+
+
+def test_resolve_target_picker_beats_name():
+    c = _FakeClient(ensure_id="col-1")
+    tid, err = ZegamiBatchExport._resolve_target_collection(c, "MyColl", "", "Other")
+    assert (tid, err) == ("col-1", None)
+    assert c.ensure_calls == ["MyColl"]
+
+
+def test_resolve_target_typed_name_is_stripped_and_ensured():
+    c = _FakeClient(ensure_id="col-2")
+    tid, err = ZegamiBatchExport._resolve_target_collection(c, "", "", "  New Coll  ")
+    assert (tid, err) == ("col-2", None)
+    assert c.ensure_calls == ["New Coll"]
+
+
+def test_resolve_target_errors_when_nothing_set():
+    tid, err = ZegamiBatchExport._resolve_target_collection(_FakeClient(), "", "", "")
+    assert tid is None and "collection" in err
+
+
+def test_resolve_target_ensure_failure_is_soft():
+    c = _FakeClient(raise_ensure=True)
+    tid, err = ZegamiBatchExport._resolve_target_collection(c, "", "", "X")
+    assert tid is None and "could not create/find" in err
+
+
+def test_resolve_target_ensure_returns_no_id():
+    c = _FakeClient(ensure_id=None)
+    tid, err = ZegamiBatchExport._resolve_target_collection(c, "", "", "X")
+    assert tid is None and "no id" in err
+
+
+def test_collection_choices_failsoft_without_ambient_key(monkeypatch):
+    # INPUT_TYPES must never raise / block at node-load; no ambient key → [""].
+    from comfyui_zegami import nodes
+    monkeypatch.setattr(nodes, "resolve_api_key", lambda *_a, **_k: "")
+    assert ZegamiBatchExport._collection_choices() == [""]
+
+
+def test_collection_choices_failsoft_on_list_error(monkeypatch):
+    from comfyui_zegami import nodes
+
+    class _Boom:
+        def __init__(self, *a, **k):
+            pass
+
+        def list_collections(self):
+            raise RuntimeError("network down")
+
+    monkeypatch.setattr(nodes, "resolve_api_key", lambda *_a, **_k: "zeg_x")
+    monkeypatch.setattr(nodes, "resolve_endpoint", lambda *_a, **_k: "https://z.test")
+    monkeypatch.setattr(nodes, "ZegamiClient", _Boom)
+    assert ZegamiBatchExport._collection_choices() == [""]

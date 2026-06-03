@@ -96,6 +96,26 @@ class ZegamiClient:
         data = self._with_retry(call).json()
         return data.get("id")
 
+    def list_collections(self) -> list[dict]:
+        """Collections the key can see — `[{"id", "name"}, ...]`.
+
+        Used to populate the node's collection picker. Single GET, no retry
+        loop (it's called at node-load and must stay snappy); the caller is
+        expected to fail soft. NB: a collection-SCOPED key returns a trimmed
+        list — a useful picker wants an account/workspace key.
+        """
+        resp = self.session.get(
+            f"{self.endpoint}/collections",
+            headers=self._headers(),
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        out: list[dict] = []
+        for c in resp.json() or []:
+            if isinstance(c, dict) and c.get("id"):
+                out.append({"id": c["id"], "name": c.get("name") or c["id"]})
+        return out
+
     def upload_item(
         self,
         collection_id: str,
