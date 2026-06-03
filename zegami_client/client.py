@@ -120,8 +120,22 @@ class ZegamiClient:
         )
 
     def upload_batch(
-        self, collection_id: str, items: Sequence[UploadItem]
+        self,
+        collection_id: str,
+        items: Sequence[UploadItem],
+        *,
+        append: bool = True,
     ) -> BatchUploadResult:
+        """Upload a batch of items into ``collection_id``.
+
+        ``append`` (default ``True``) tells the server to ADD this batch
+        to the collection rather than replacing it — so successive
+        generations accumulate as distinct tiles, which is what an
+        incremental client (the ComfyUI export node) wants. Pass
+        ``append=False`` for one-shot dataset pushes that should define
+        the whole collection. On a fresh/empty collection the two behave
+        identically.
+        """
         if not items:
             return BatchUploadResult(success=True, collection_id=collection_id, item_ids=[])
 
@@ -143,6 +157,7 @@ class ZegamiClient:
                         "csvBlob": csv_blob,
                         "csvJoinCol": "name",
                         "thumbSize": 512,
+                        "append": append,
                     },
                     headers=self._headers(),
                     timeout=self.timeout,

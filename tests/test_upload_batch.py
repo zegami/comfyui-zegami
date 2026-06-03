@@ -84,6 +84,9 @@ def test_upload_batch_image_happy_path(tmp_path):
     assert captured["body"]["csvJoinCol"] == "name"
     assert captured["body"]["zipBlobs"] == ["col1/_staging/zip"]
     assert captured["body"]["csvBlob"] == "col1/_staging/csv"
+    # Default is append=True so successive generations accumulate as
+    # distinct tiles rather than overwriting the previous batch.
+    assert captured["body"]["append"] is True
     assert captured["auth"] == "Bearer zeg_secret"
     # Both staging PUTs carry a Content-Type (regression — see commit msg).
     assert captured["stage_content_types"] == {"zip": "application/zip", "csv": "text/csv"}
@@ -91,6 +94,25 @@ def test_upload_batch_image_happy_path(tmp_path):
     assert "_comfy_json" in captured["csv"]
     assert "KSampler" in captured["csv"]
     assert "media_kind" in captured["csv"]
+
+
+def test_upload_batch_append_false_is_forwarded(tmp_path):
+    # A caller can opt out of accumulation (one-shot dataset push) and the
+    # flag must reach the server body verbatim.
+    captured = {}
+
+    def handler(method, url, kw):
+        if "upload-stream" in url:
+            kind = "csv" if "kind=csv" in url else "zip"
+            return FakeResponse(200, {"blobPath": f"col1/_staging/{kind}"})
+        if url.endswith("/manage/import-zip"):
+            captured["body"] = kw["json"]
+            return FakeResponse(202, {"status": "queued"})
+        return FakeResponse(404, text="unexpected")
+
+    res = _client(handler).upload_batch("col1", _image_items(tmp_path), append=False)
+    assert res.success
+    assert captured["body"]["append"] is False
 
 
 def test_upload_batch_video_sets_media_kind_and_raw_ext(tmp_path):
