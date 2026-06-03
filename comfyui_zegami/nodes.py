@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import tempfile
+import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -71,6 +73,26 @@ class ZegamiBatchExport:
             return Path(folder_paths.get_output_directory())
         except Exception:
             return Path(tempfile.mkdtemp(prefix="zegami_"))
+
+    @staticmethod
+    def _make_run_id(unique_id: Any) -> str:
+        """A per-execution name prefix for this batch's items.
+
+        `unique_id` is the node's GRAPH id — stable across every queue run of
+        the same workflow, so on its own it only disambiguates multiple export
+        nodes within one workflow. It must NOT be the sole name key: otherwise
+        every generation emits the same item names (`<nodeid>_000000`), which
+        extract to the same `raw/<name>` blob path and overwrite the previous
+        generation instead of accumulating as a new tile (the "my new image
+        isn't showing up" bug).
+
+        Salt it with a per-execution timestamp + short uuid so separate
+        generations are distinct. The timestamp keeps names lexicographically
+        time-sortable; the uuid suffix closes the gap when two prompts are
+        queued in the same wall-clock second (batch / API submit).
+        """
+        node_id = str(unique_id or "run").replace("/", "_")
+        return f"{node_id}_{int(time.time())}_{uuid.uuid4().hex[:6]}"
 
     def _build_items(
         self,
@@ -176,7 +198,7 @@ class ZegamiBatchExport:
             return (images, json.dumps({"success": False, "error": "disabled"}))
 
         out_dir = self._output_dir()
-        run_id = str(unique_id or "run").replace("/", "_")
+        run_id = self._make_run_id(unique_id)
         base_meta = build_metadata(
             prompt,
             extra_pnginfo,
