@@ -42,6 +42,55 @@ def _as_array(x: Any) -> np.ndarray | None:
         return None
 
 
+def _video_components(video: Any) -> tuple[np.ndarray | None, int | None]:
+    """Frames + fps from a ComfyUI NATIVE VIDEO object (`VideoFromComponents`
+    and any other `comfy_api` VideoInput — duck-typed on `get_components`).
+    ComfyUI's newer video nodes emit these instead of an IMAGE batch tensor;
+    `get_components()` yields `.images` (`[frames, H, W, C]`) plus a
+    `.frame_rate` (a `Fraction`). Returns (None, None) when `video` isn't a
+    native VIDEO, so callers fall through to the tensor / VHS paths.
+
+    Without this, `_as_array(video)` wraps the object in a 0-d numpy *object*
+    array (not None), the clip is misclassified as a single frame, and
+    `_frame_to_uint8(...).astype(np.uint8)` calls `int()` on the video object —
+    `int() argument must be ... not 'VideoFromComponents'`.
+    """
+    get_components = getattr(video, "get_components", None)
+    if not callable(get_components):
+        return None, None
+    try:
+        comps = get_components()
+        frames = _as_array(getattr(comps, "images", None))
+    except Exception:
+        return None, None
+    fps: int | None = None
+    rate = getattr(comps, "frame_rate", None)
+    if rate is not None:
+        try:
+            fps = max(1, round(float(rate)))
+        except (TypeError, ValueError):
+            fps = None
+    return frames, fps
+
+
+def _frames_array(x: Any) -> np.ndarray | None:
+    """Frames `[N, H, W, C]` from either a native VIDEO object or an array-like
+    tensor. Native VIDEO is tried first so it never reaches `np.asarray` (which
+    would 0-d-wrap the object and break the downstream encode)."""
+    frames, _ = _video_components(x)
+    if frames is not None:
+        return frames
+    return _as_array(x)
+
+
+def video_fps(video: Any, default: int) -> int:
+    """A native VIDEO's own frame rate (authoritative — re-timing a real clip to
+    a guessed default would play it at the wrong speed), else the caller's
+    default (the node's `fps` widget)."""
+    _, fps = _video_components(video)
+    return fps if fps else default
+
+
 def _vhs_path(video: Any) -> Path | None:
     """Extract a file path from a VideoHelperSuite-style VHS_VIDEO object."""
     if isinstance(video, dict):
@@ -65,7 +114,9 @@ def classify_output(images: Any = None, video: Any = None) -> str:
     if video is not None:
         if _vhs_path(video) is not None:
             return "vhs_video"
-        arr = _as_array(video)
+        # Native VIDEO (VideoFromComponents) OR a raw frames tensor — both
+        # normalise to `[frames, H, W, C]` via `_frames_array`.
+        arr = _frames_array(video)
         if arr is not None and arr.ndim == 4 and arr.shape[0] > 1:
             return "video_frames"
         return "single_frame"
@@ -74,7 +125,7 @@ def classify_output(images: Any = None, video: Any = None) -> str:
 
 
 def image_count(images: Any) -> int:
-    arr = _as_array(images)
+    arr = _frames_array(images)
     if arr is None:
         return 0
     return int(arr.shape[0]) if arr.ndim == 4 else 1
@@ -93,7 +144,7 @@ def encode_image_tensor(images: Any, index: int, out_path: Path) -> Path:
     """Write the `index`-th still of an IMAGE batch as a PNG."""
     from PIL import Image  # lazy: ComfyUI provides PIL at runtime
 
-    arr = _as_array(images)
+    arr = _frames_array(images)
     if arr is None:
         raise ValueError("images is not array-like")
     frame = arr[index] if arr.ndim == 4 else arr
@@ -107,9 +158,9 @@ def encode_video_frames(
     """Encode `[frames, H, W, C]` to an MP4. Frames are streamed one at a time
     to a temp rawvideo file (never a second full-clip copy in RAM), then ffmpeg
     transcodes from disk."""
-    arr = _as_array(frames)
+    arr = _frames_array(frames)
     if arr is None or arr.ndim != 4:
-        raise ValueError("video frames must be a [frames, H, W, C] tensor")
+        raise ValueError("video frames must be a [frames, H, W, C] tensor or a native VIDEO")
     n, h, w = int(arr.shape[0]), int(arr.shape[1]), int(arr.shape[2])
     raw = Path(out_path).with_suffix(".rgb24.raw")
     with open(raw, "wb") as f:
