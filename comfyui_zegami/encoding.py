@@ -180,6 +180,35 @@ def encode_video_frames(
     return Path(out_path)
 
 
+def save_native_video(video: Any, out_path: Path) -> Path | None:
+    """Serialize a ComfyUI NATIVE VIDEO object to `out_path`, preserving its
+    AUDIO track. Duck-typed on `save_to` — ComfyUI's `VideoInput.save_to`
+    muxes video + audio (it's exactly what the built-in SaveVideo uses), so the
+    clip Zegami receives matches the `/output/video` copy that has sound.
+
+    `encode_video_frames` only ever sees `get_components().images` (the RGB
+    frames) and so DROPS the audio; prefer this whenever the VIDEO object can
+    serialize itself.
+
+    Returns None when `video` has no usable `save_to` — a raw IMAGE-batch-as-
+    video frames tensor, which carries no audio to lose — so the caller falls
+    back to the frame re-encode. Also returns None (→ fallback) if `save_to`
+    raises or writes nothing, so a serializer quirk can't lose the clip
+    entirely.
+    """
+    save_to = getattr(video, "save_to", None)
+    if not callable(save_to):
+        return None
+    try:
+        # AUTO container/codec: ComfyUI infers mp4 + h264 from the `.mp4`
+        # suffix and muxes the audio stream when the VIDEO has one.
+        save_to(str(out_path))
+    except Exception:
+        return None
+    p = Path(out_path)
+    return p if p.exists() and p.stat().st_size > 0 else None
+
+
 def make_poster(
     video_path: Path, out_path: Path, *, duration_s: float = 0.0, runner: Runner = subprocess.run
 ) -> Path:
