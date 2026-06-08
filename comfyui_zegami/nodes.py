@@ -33,6 +33,7 @@ from .encoding import (
     encode_video_frames,
     image_count,
     make_poster,
+    video_fps,
 )
 from .queue import UploadJob, get_queue
 
@@ -211,8 +212,12 @@ class ZegamiBatchExport:
         name = f"{run_id}_000000"
         if kind == "video_frames":
             try:
-                mp4 = encode_video_frames(video, out_dir / f"{name}.mp4", fps=fps)
-                dur = image_count(video) / float(fps or 16)
+                # A native VIDEO carries its own frame rate — honour it (encoding
+                # at the widget default would play a real clip at the wrong
+                # speed); an IMAGE-batch-as-video has none, so the widget wins.
+                eff_fps = video_fps(video, fps)
+                mp4 = encode_video_frames(video, out_dir / f"{name}.mp4", fps=eff_fps)
+                dur = image_count(video) / float(eff_fps or 16)
                 poster = self._safe_poster(mp4, video, out_dir / f"{name}.jpg", dur)
                 items.append(
                     UploadItem(
