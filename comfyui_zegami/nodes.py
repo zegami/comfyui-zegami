@@ -33,6 +33,7 @@ from .encoding import (
     encode_video_frames,
     image_count,
     make_poster,
+    save_native_video,
     video_fps,
 )
 from .queue import UploadJob, get_queue
@@ -216,7 +217,14 @@ class ZegamiBatchExport:
                 # at the widget default would play a real clip at the wrong
                 # speed); an IMAGE-batch-as-video has none, so the widget wins.
                 eff_fps = video_fps(video, fps)
-                mp4 = encode_video_frames(video, out_dir / f"{name}.mp4", fps=eff_fps)
+                mp4_path = out_dir / f"{name}.mp4"
+                # Prefer the native VIDEO's own serializer: it muxes the AUDIO
+                # track (matching ComfyUI's SaveVideo). The frame re-encode only
+                # sees the RGB frames and drops audio — fall back to it only for
+                # a raw IMAGE-batch-as-video, which has no audio to lose.
+                mp4 = save_native_video(video, mp4_path) or encode_video_frames(
+                    video, mp4_path, fps=eff_fps
+                )
                 dur = image_count(video) / float(eff_fps or 16)
                 poster = self._safe_poster(mp4, video, out_dir / f"{name}.jpg", dur)
                 items.append(

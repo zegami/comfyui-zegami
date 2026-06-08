@@ -120,6 +120,48 @@ def test_coerce_fps_handles_blank_and_garbage():
     assert coerce("9999") == 120     # clamped to max
 
 
+# ── video audio preservation (native VIDEO must keep its audio track) ───────
+
+def test_build_items_video_prefers_save_to_for_audio(tmp_path):
+    # A native VIDEO with audio must reach Zegami via its own serializer
+    # (save_to → muxes audio), NOT the frame re-encode (RGB frames only →
+    # silent). Regression: the LTX clip arrived silent because it was rebuilt
+    # from get_components().images.
+    from fractions import Fraction
+
+    import numpy as np
+
+    class _SavableVideo:
+        def __init__(self, frames):
+            self._frames = frames
+            self.encoded_frames = False
+
+        def get_components(self):
+            comps = type("C", (), {})()
+            comps.images = self._frames
+            comps.frame_rate = Fraction(24, 1)
+            return comps
+
+        def save_to(self, path, *args, **kwargs):
+            with open(path, "wb") as f:
+                f.write(b"mp4-with-audio")
+
+    items = ZegamiBatchExport()._build_items(
+        images=None,
+        video=_SavableVideo(np.zeros((4, 8, 8, 3))),
+        fps=16,
+        out_dir=tmp_path,
+        base_meta={},
+        run_id="r",
+    )
+    assert len(items) == 1
+    it = items[0]
+    assert it.media_type == "video"
+    # The sentinel bytes prove the clip came from save_to (audio path), not the
+    # frame-only ffmpeg re-encode.
+    assert it.media_path.read_bytes() == b"mp4-with-audio"
+
+
 def test_collection_choices_failsoft_without_ambient_key(monkeypatch):
     # INPUT_TYPES must never raise / block at node-load; no ambient key → [""].
     from comfyui_zegami import nodes

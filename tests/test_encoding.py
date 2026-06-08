@@ -8,6 +8,7 @@ from comfyui_zegami.encoding import (
     encode_video_frames,
     image_count,
     make_poster,
+    save_native_video,
     video_fps,
 )
 
@@ -107,6 +108,53 @@ def test_video_fps_prefers_native_rate():
     assert video_fps(FakeNativeVideo(np.zeros((2, 4, 4, 3)), Fraction(24, 1)), default=16) == 24
     # A raw frames tensor has no inherent rate → the widget default wins.
     assert video_fps(np.zeros((2, 4, 4, 3)), default=16) == 16
+
+
+class FakeSavableVideo(FakeNativeVideo):
+    """A native VIDEO that can serialize itself (`save_to`) — ComfyUI's real
+    VideoFromComponents does this and muxes the audio track. The sentinel bytes
+    stand in for "a real mp4 with audio"."""
+
+    def __init__(self, frames, frame_rate=Fraction(24, 1)):
+        super().__init__(frames, frame_rate)
+        self.saved_to: str | None = None
+
+    def save_to(self, path, *args, **kwargs):
+        self.saved_to = str(path)
+        with open(path, "wb") as f:
+            f.write(b"mp4-with-audio")
+
+
+def test_save_native_video_uses_save_to(tmp_path):
+    vid = FakeSavableVideo(np.zeros((3, 4, 4, 3)))
+    out = save_native_video(vid, tmp_path / "v.mp4")
+    assert out == tmp_path / "v.mp4"
+    assert out.exists() and out.read_bytes() == b"mp4-with-audio"
+    assert vid.saved_to == str(tmp_path / "v.mp4")
+
+
+def test_save_native_video_none_without_save_to(tmp_path):
+    # A frames-only native VIDEO (no audio, no serializer) → caller re-encodes.
+    assert save_native_video(FakeNativeVideo(np.zeros((3, 4, 4, 3))), tmp_path / "v.mp4") is None
+    assert save_native_video(np.zeros((3, 4, 4, 3)), tmp_path / "v.mp4") is None
+
+
+def test_save_native_video_none_on_failure(tmp_path):
+    class Boom:
+        def save_to(self, path, *a, **k):
+            raise RuntimeError("encoder blew up")
+
+    # A serializer that throws must not strand the upload — return None so the
+    # node falls back to the frame re-encode rather than crashing.
+    assert save_native_video(Boom(), tmp_path / "v.mp4") is None
+
+
+def test_save_native_video_none_when_nothing_written(tmp_path):
+    class NoOp:
+        def save_to(self, path, *a, **k):
+            pass  # claims success but writes no file
+
+    assert save_native_video(NoOp(), tmp_path / "v.mp4") is None
 
 
 def test_make_poster_uses_midpoint(tmp_path):
