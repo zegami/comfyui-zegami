@@ -1,4 +1,6 @@
+import io
 import json
+import zipfile
 
 from comfyui_zegami.queue import UploadJob, process_job
 from zegami_client import UploadItem, ZegamiClient
@@ -150,8 +152,11 @@ def test_upload_batch_video_sets_media_kind_and_raw_ext(tmp_path):
 
     def handler(method, url, kw):
         if "upload-stream" in url:
+            body = kw["data"].read()
             if "kind=csv" in url:
-                captured["csv"] = kw["data"].read().decode()
+                captured["csv"] = body.decode()
+            else:
+                captured["zip"] = body
             return FakeResponse(200, {"blobPath": "b"})
         if url.endswith("/manage/import-zip"):
             return FakeResponse(202, {"status": "queued"})
@@ -162,6 +167,27 @@ def test_upload_batch_video_sets_media_kind_and_raw_ext(tmp_path):
     assert "video" in captured["csv"]
     assert "mp4" in captured["csv"]  # raw_ext
     assert "3.250" in captured["csv"]  # duration_s
+    # The zip carries BOTH the poster (grid tile) and the clip itself (so the
+    # server preserves it at raw_assets/<slot>.mp4 for playback) under one stem.
+    names = set(zipfile.ZipFile(io.BytesIO(captured["zip"])).namelist())
+    assert names == {"000000.jpg", "000000.mp4"}
+
+
+def test_upload_batch_image_zip_has_no_video(tmp_path):
+    captured = {}
+
+    def handler(method, url, kw):
+        if "upload-stream" in url:
+            if "kind=zip" in url:
+                captured["zip"] = kw["data"].read()
+            return FakeResponse(200, {"blobPath": "b"})
+        if url.endswith("/manage/import-zip"):
+            return FakeResponse(202, {"status": "queued"})
+        return FakeResponse(404)
+
+    _client(handler).upload_batch("col1", _image_items(tmp_path, n=1))
+    names = set(zipfile.ZipFile(io.BytesIO(captured["zip"])).namelist())
+    assert names == {"000000.png"}  # image-only: no extra video entry
 
 
 def test_upload_batch_retries_transient_then_succeeds(tmp_path):
