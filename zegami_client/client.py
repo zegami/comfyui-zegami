@@ -3,7 +3,8 @@
 GET /api/v1/ingest/schema.json on any instance).
 
 Flow per batch:
-  1. build one zip of media (PNG stills / video poster JPEGs) on disk
+  1. build one zip of media (PNG stills / video poster JPEGs + the source
+     clip alongside each poster) on disk
   2. build a metadata.csv (RFC-4180 quoted) with the `name` join key,
      `media_kind`, `raw_ext`, `duration_s`, and the opaque `_comfy_json`
      prompt-graph column
@@ -229,6 +230,13 @@ class ZegamiClient:
                 img = self._grid_image(it)
                 ext = (img.suffix.lstrip(".") or "png").lower()
                 zf.write(img, f"{it.name}.{ext}")
+                # For a video, also ship the clip itself (same stem as its
+                # poster) so the server preserves it at raw_assets/<slot>.<ext>
+                # for inspector/hover playback — the poster above stays the grid
+                # tile. Skip when the clip already IS the grid image (no poster).
+                if it.media_type == "video" and it.media_path != img:
+                    vext = (it.media_path.suffix.lstrip(".") or "mp4").lower()
+                    zf.write(it.media_path, f"{it.name}.{vext}")
 
     def _build_csv(self, csv_path: Path, items: Sequence[UploadItem]) -> None:
         # csv.writer quoting keeps the minified-JSON `_comfy_json` cell intact
