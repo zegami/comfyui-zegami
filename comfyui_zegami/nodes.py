@@ -25,7 +25,7 @@ from zegami_client import (
     resolve_endpoint,
 )
 
-from .capture import build_metadata
+from .capture import build_metadata, split_tags
 from .encoding import (
     _vhs_path,
     classify_output,
@@ -187,6 +187,17 @@ class ZegamiBatchExport:
             return None, f"ensure_collection returned no id for {name!r}"
         return rid, None
 
+    @staticmethod
+    def _stamp_columns(
+        items: list[UploadItem], columns: dict[str, str] | None
+    ) -> list[UploadItem]:
+        """Attach the batch's `key=value` tag columns to every item — they
+        become their own dataset columns via the CSV builder."""
+        if columns:
+            for it in items:
+                it.columns = dict(columns)
+        return items
+
     def _build_items(
         self,
         images: Any,
@@ -195,6 +206,7 @@ class ZegamiBatchExport:
         out_dir: Path,
         base_meta: dict,
         run_id: str,
+        columns: dict[str, str] | None = None,
     ) -> list[UploadItem]:
         kind = classify_output(images=images, video=video)
         items: list[UploadItem] = []
@@ -208,7 +220,7 @@ class ZegamiBatchExport:
                 items.append(
                     UploadItem(name=name, media_path=png, media_type="image", metadata=meta)
                 )
-            return items
+            return self._stamp_columns(items, columns)
 
         name = f"{run_id}_000000"
         if kind == "video_frames":
@@ -261,7 +273,7 @@ class ZegamiBatchExport:
                         thumbnail_path=poster,
                     )
                 )
-        return items
+        return self._stamp_columns(items, columns)
 
     @staticmethod
     def _safe_poster(media: Path, frames: Any, out: Path, dur: float) -> Path | None:
@@ -316,11 +328,16 @@ class ZegamiBatchExport:
             notes=notes,
             prompt_id=str(unique_id) if unique_id is not None else None,
         )
+        # `key=value` entries in the tags widget become their own dataset
+        # columns (plain tags stay in `_comfy_json.tags`).
+        _plain_tags, tag_columns = split_tags(tags)
 
         # Encode locally FIRST — the fail-soft anchor. A later upload error
         # never costs the user their generation.
         try:
-            items = self._build_items(images, video, fps, out_dir, base_meta, run_id)
+            items = self._build_items(
+                images, video, fps, out_dir, base_meta, run_id, columns=tag_columns
+            )
         except Exception as e:
             return (images, json.dumps({"success": False, "error": f"encode failed: {e}"}))
 

@@ -14,6 +14,35 @@ import platform
 from typing import Any
 
 
+def split_tags(tags: str) -> tuple[list[str], dict[str, str]]:
+    """Split the `tags` widget into plain tags and ``key=value`` column pairs.
+
+    Comma-separated. An entry containing ``=`` is a metadata column
+    (``style=anime`` → column ``style`` with value ``anime``); the Zegami
+    ingest promotes any such CSV column into a real, filterable dataset column
+    (numeric values are type-inferred). An entry with no ``=`` stays a plain
+    tag and lands in ``_comfy_json.tags`` as before.
+
+    Keys and values are stripped. Blank keys are dropped, as is the reserved
+    ``name`` key (it's the row join key — a column named ``name`` would
+    misalign every row). On a duplicate key the last value wins.
+    """
+    plain: list[str] = []
+    columns: dict[str, str] = {}
+    for raw in tags.split(","):
+        entry = raw.strip()
+        if not entry:
+            continue
+        if "=" in entry:
+            key, _, value = entry.partition("=")
+            key = key.strip()
+            if key and key.lower() != "name":
+                columns[key] = value.strip()
+        else:
+            plain.append(entry)
+    return plain, columns
+
+
 def _torch_version() -> str | None:
     try:
         import torch  # noqa: PLC0415
@@ -75,7 +104,9 @@ def build_metadata(
 
     meta["batch_index"] = batch_index
     meta["batch_size"] = batch_size
-    parsed_tags = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+    # `key=value` entries become real dataset columns (handled by the node's
+    # CSV builder), so only the plain tags belong in `_comfy_json.tags`.
+    parsed_tags, _columns = split_tags(tags) if tags else ([], {})
     if parsed_tags:
         meta["tags"] = parsed_tags
     if notes:

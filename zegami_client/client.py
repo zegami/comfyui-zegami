@@ -241,21 +241,34 @@ class ZegamiClient:
     def _build_csv(self, csv_path: Path, items: Sequence[UploadItem]) -> None:
         # csv.writer quoting keeps the minified-JSON `_comfy_json` cell intact
         # through the server's pyarrow CSV reader → Parquet VARCHAR.
-        fields = ["name", "media_kind", "raw_ext", "duration_s", "_comfy_json"]
+        base = ["name", "media_kind", "raw_ext", "duration_s", "_comfy_json"]
+        # Promote each item's `key=value` tag columns to real CSV columns — the
+        # ingest turns any extra CSV column into a filterable dataset column.
+        # Union the keys across items (first-seen order) so a column present on
+        # only some rows still gets a header; DictWriter blank-fills the rest.
+        # Never let a tag column shadow a base field.
+        reserved = set(base)
+        extra: list[str] = []
+        for it in items:
+            for key in getattr(it, "columns", None) or {}:
+                if key not in reserved:
+                    reserved.add(key)
+                    extra.append(key)
+        fields = base + extra
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
             w.writeheader()
             for it in items:
                 is_video = it.media_type == "video"
-                w.writerow(
-                    {
-                        "name": it.name,
-                        "media_kind": it.media_type,
-                        "raw_ext": it.media_path.suffix.lstrip(".").lower() if is_video else "",
-                        "duration_s": f"{it.duration_s:.3f}" if is_video and it.duration_s else "",
-                        "_comfy_json": json.dumps(it.metadata, separators=(",", ":")),
-                    }
-                )
+                row = {
+                    "name": it.name,
+                    "media_kind": it.media_type,
+                    "raw_ext": it.media_path.suffix.lstrip(".").lower() if is_video else "",
+                    "duration_s": f"{it.duration_s:.3f}" if is_video and it.duration_s else "",
+                    "_comfy_json": json.dumps(it.metadata, separators=(",", ":")),
+                }
+                row.update(getattr(it, "columns", None) or {})
+                w.writerow(row)
 
     def _stage(self, collection_id: str, path: Path, kind: str, upload_id: str) -> str:
         # `uploadId` namespaces this run's staged blobs (zip + csv share it),

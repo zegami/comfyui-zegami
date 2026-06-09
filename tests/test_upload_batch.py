@@ -66,6 +66,41 @@ def _image_items(tmp_path, n=2):
     return items
 
 
+def test_upload_batch_promotes_tag_columns_to_csv(tmp_path):
+    # `key=value` tags ride their own CSV columns so the ingest promotes them to
+    # real, filterable dataset columns. Keys are unioned across items (first-seen
+    # order) and DictWriter blank-fills a row that lacks one.
+    import csv as _csv
+    import io as _io
+
+    captured = {}
+
+    def handler(method, url, kw):
+        if "upload-stream" in url:
+            if "kind=csv" in url:
+                captured["csv"] = kw["data"].read().decode()
+            return FakeResponse(200, {"blobPath": "b"})
+        if url.endswith("/manage/import-zip"):
+            return FakeResponse(202, {"status": "queued"})
+        return FakeResponse(404, text="unexpected")
+
+    items = _image_items(tmp_path, n=2)
+    items[0].columns = {"style": "anime"}
+    items[1].columns = {"campaign": "spring"}
+
+    _client(handler).upload_batch("col1", items)
+
+    rows = list(_csv.DictReader(_io.StringIO(captured["csv"])))
+    assert "style" in rows[0] and "campaign" in rows[0]
+    assert rows[0]["style"] == "anime"
+    assert rows[0]["campaign"] == ""  # blank-filled — item 0 had no campaign
+    assert rows[1]["style"] == ""
+    assert rows[1]["campaign"] == "spring"
+    # Base columns untouched.
+    assert rows[0]["name"] == "000000"
+    assert "_comfy_json" in rows[0]
+
+
 def test_upload_batch_image_happy_path(tmp_path):
     captured = {}
 
