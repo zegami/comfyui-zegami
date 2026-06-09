@@ -18,6 +18,8 @@ class UploadItem:
     is the poster JPEG that becomes the grid tile. `metadata` is the opaque
     capture dict (prompt graph + exec info) serialised into the `_comfy_json`
     column. `duration_s` is surfaced as its own column for the grid badge.
+    `columns` are user `key=value` tags promoted to their own dataset columns
+    (one CSV column per key, shared by every item in the batch).
     """
 
     name: str
@@ -26,6 +28,7 @@ class UploadItem:
     metadata: dict = field(default_factory=dict)
     thumbnail_path: Path | None = None
     duration_s: float = 0.0
+    columns: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

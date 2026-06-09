@@ -1,6 +1,34 @@
 import json
 
-from comfyui_zegami.capture import build_metadata
+from comfyui_zegami.capture import build_metadata, split_tags
+
+
+def test_split_tags_separates_plain_tags_from_key_value_columns():
+    plain, columns = split_tags("hero, style=anime, weight = 0.8 , favourite")
+    assert plain == ["hero", "favourite"]
+    # `key=value` entries become columns; keys + values are stripped.
+    assert columns == {"style": "anime", "weight": "0.8"}
+
+
+def test_split_tags_handls_edges():
+    # Blank entries, blank keys, the reserved `name` join key, and value-side
+    # `=` are all handled; on a duplicate key the last value wins.
+    plain, columns = split_tags(" , =orphan, name=oops, a=1, a=2, url=http://x?q=1")
+    assert plain == []
+    assert "name" not in columns  # never shadow the row join key
+    assert columns == {"a": "2", "url": "http://x?q=1"}
+
+
+def test_split_tags_empty():
+    assert split_tags("") == ([], {})
+
+
+def test_build_metadata_keeps_only_plain_tags_in_comfy_json():
+    # `key=value` pairs are promoted to columns, so they must NOT linger in the
+    # opaque `_comfy_json.tags` list as literal "style=anime" strings.
+    meta = build_metadata(tags="hero, style=anime")
+    assert meta["tags"] == ["hero"]
+    assert "style=anime" not in json.dumps(meta)
 
 
 def test_full_capture():
